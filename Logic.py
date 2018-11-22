@@ -356,8 +356,49 @@ class Binding:
             for statement in x.list_of_statements:
                 list_of_statements.append(self.bind(statement))
             return Disjunction(list_of_statements=list_of_statements)
+    def merge(self,obj):
+        res = Binding()
+        if self.is_fail or obj.is_fail:
+            res.is_fail = True
+        else:
+            is_fail = False
+            for key in self.binding_dict.keys():
+                if key in obj.binding_dict and obj.binding_dict[key] != self.binding_dict[key]:
+                    is_fail = True
+                    break
+            if is_fail:
+                res.is_fail = True
+            else:
+                res.binding_dict.update(self.binding_dict)
+                res.binding_dict.update(obj.binding_dict)
+        return res
     
-
+class ListOfBinding:
+    def __init__(self, binding_list = []):
+        if isinstance(binding_list,Binding):
+            binding_list = [binding_list]
+        self.binding_list = binding_list
+    def merge_or(self, obj):
+        if isinstance(obj,Binding):
+            obj = ListOfBinding(binding_list=[obj])
+        new_binding_list = []
+        for binding in self.binding_list:
+            if not binding.is_fail:
+                new_binding_list.append(binding)
+        for binding in obj.binding_list:
+            if not binding.is_fail:
+                new_binding_list.append(binding)
+        return ListOfBinding(new_binding_list)
+    def merge_and(self,obj):
+        if isinstance(obj,Binding):
+            obj = ListOfBinding(binding_list=[obj])
+        new_binding_list = []
+        for self_bind in self.binding_list:
+            for obj_bind in obj.binding_list:
+                if not self_bind.is_fail and not obj_bind.is_fail:
+                    new_binding_list.append(self_bind.merge(obj_bind))
+        return ListOfBinding(new_binding_list)
+            
 
 def unify(x,y, binding):
     if binding.is_fail:
@@ -472,12 +513,32 @@ class KnowledgeBase:
             if len(new)==0:
                 break
         return False
-
+    # Backward chaining
+    def backward_chaining_ask(self,goal):
+        return self.backward_chaining_or(goal)
+    def backward_chaining_or(self,goal):
+        binding_list = ListOfBinding()
+        for fact in self.list_of_facts:
+            if fact.is_unificable(goal):
+                binding = Binding()
+                unify(fact,goal,binding)
+                if not binding.is_fail:
+                    binding_list.binding_list.append(binding)
+        for rule in self.list_of_rules:
+            if rule.lhs.is_unificable(goal):
+                binding = Binding()
+                unify(rule.lhs, goal, binding)
+                if not binding.is_fail:
+                    binding_list = binding_list.merge_or(self.backward_chaining_and(rule.rhs))
+        return binding_list
+    def backward_chaining_and(self, conj_of_goals):
+        binding_list = ListOfBinding()
+        
 
 
 knowledge_base = KnowledgeBase()
 knowledge_base.input_from_file('input.txt')
-# print(str(knowledge_base))
+print(str(knowledge_base))
 start = time.time()
 for query in knowledge_base.list_of_query:
     binding = knowledge_base.forward_chaining(query)
