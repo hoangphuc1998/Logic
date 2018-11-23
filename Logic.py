@@ -24,8 +24,12 @@ class Statement:
         self.list_of_terms = []
         for term in list_of_terms:
             self.list_of_terms.append(Term(term.term))
-        self.predicate = predicate
         self.negative = negative
+        if predicate.startswith('\+'):
+            predicate = predicate[2:]
+            self.negative = not self.negative
+        self.predicate = predicate
+        
     def negate(self):
         return Statement(list_of_terms=self.list_of_terms, predicate=self.predicate, negative = not self.negative)
     def add_new_term(self,term):
