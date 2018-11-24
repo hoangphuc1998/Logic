@@ -1,6 +1,8 @@
 import sys
 import time
 name_identity = 1000
+abstract_var = 1
+abstract_name = '_/*'
 def is_variable(term):
         if term[0].isupper() or term.startswith('_'):
             return True
@@ -13,6 +15,8 @@ class Term:
         self.is_var = is_variable(term)
         self.term = term
     def __str__(self):
+        if self.term.startswith(abstract_name):
+            return '_'
         return str(self.term)
     
     def __eq__(self, cmp):
@@ -24,8 +28,12 @@ class Statement:
         self.list_of_terms = []
         for term in list_of_terms:
             self.list_of_terms.append(Term(term.term))
-        self.predicate = predicate
         self.negative = negative
+        if predicate.startswith('\+'):
+            predicate = predicate[2:]
+            self.negative = not self.negative
+        self.predicate = predicate
+        
     def negate(self):
         return Statement(list_of_terms=self.list_of_terms, predicate=self.predicate, negative = not self.negative)
     def add_new_term(self,term):
@@ -75,6 +83,13 @@ class Statement:
                     bind_dict[term.term] = '_' + str(name_identity)
                 self.list_of_terms[index] = Term(term = bind_dict[term.term])
         return bind_dict
+    def standardlize_abstract_variable(self):
+        global abstract_var
+        global abstract_name
+        for term in self.list_of_terms:
+            if term.term == '_':
+                term.term = abstract_name + str(abstract_var)
+                abstract_var+=1
     def get_variable_list(self):
         res = []
         for term in self.list_of_terms:
@@ -145,8 +160,17 @@ class Conjunction:
         if has_dis == False:
             list_of_new_con.append(self)
         return list_of_new_con
-
-          
+    def get_list_var(self):
+        res = []
+        for statement in self.list_of_statements:
+            if isinstance(statement,Statement):
+                res = list(set(res + statement.get_variable_list()))
+            else:
+                res = list(set(res + statement.get_list_var()))
+        return res
+    def standardlize_abstract_variable(self):
+        for statement in self.list_of_statements:
+            statement.standardlize_abstract_variable()
 class Disjunction:
     #Disjunction of statements
     def __init__(self, list_of_statements = []):
@@ -194,6 +218,17 @@ class Disjunction:
                     equal = False
                     break
             return equal
+    def get_list_var(self):
+        res = []
+        for statement in self.list_of_statements:
+            if isinstance(statement,Statement):
+                res = list(set(res + statement.get_variable_list()))
+            else:
+                res = list(set(res + statement.get_list_var()))
+        return res
+    def standardlize_abstract_variable(self):
+        for statement in self.list_of_statements:
+            statement.standardlize_abstract_variable()
 class Rule:
     #Define a rule with left and right hand side are Conjunction of statements
     def __init__(self, lhs, rhs = None):
@@ -482,7 +517,9 @@ class KnowledgeBase:
                 line = line.strip()
                 if line.startswith('?-'):
                     line = line[2:].strip()
-                    self.list_of_query.append(process_string(line).list_of_statements[0])
+                    query = process_string(line)
+                    query.standardlize_abstract_variable()
+                    self.list_of_query.append(query)
                 elif not line.startswith('%') and line != '':
                     expr = line.split(':-')
                     #print(expr[0])
@@ -512,6 +549,23 @@ class KnowledgeBase:
         for fact in self.list_of_facts:
             output+= str(fact) + '\n'
         return output
+    def forward_chaining_ask(self, goal):
+        list_of_binding = None
+        if isinstance(goal,Statement):
+            return ListOfBinding(self.forward_chaining(goal))
+        elif isinstance(goal,Conjunction):
+            for subgoal in goal.list_of_statements:
+                if list_of_binding!=None:
+                    list_of_binding = list_of_binding.merge_and(self.forward_chaining_ask(subgoal))
+                else:
+                    list_of_binding = self.forward_chaining_ask(subgoal)
+        elif isinstance(goal,Disjunction):
+            for subgoal in goal.list_of_statements:
+                if list_of_binding!=None:
+                    list_of_binding = list_of_binding.merge_or(self.forward_chaining_ask(subgoal))
+                else:
+                    list_of_binding = self.forward_chaining_ask(subgoal)
+        return list_of_binding
     def forward_chaining(self,goal):
         for fact in self.list_of_facts:
             if fact.is_unificable(goal):
@@ -556,7 +610,22 @@ class KnowledgeBase:
         return False
     # Backward chaining
     def backward_chaining_ask(self,goal):
-        return self.backward_chaining_or(goal)
+        list_of_binding = None
+        if isinstance(goal,Statement):
+            return self.backward_chaining_or(goal)
+        elif isinstance(goal,Conjunction):
+            for subgoal in goal.list_of_statements:
+                if list_of_binding!=None:
+                    list_of_binding = list_of_binding.merge_and(self.backward_chaining_ask(subgoal))
+                else:
+                    list_of_binding = self.backward_chaining_ask(subgoal)
+        elif isinstance(goal,Disjunction):
+            for subgoal in goal.list_of_statements:
+                if list_of_binding!=None:
+                    list_of_binding = list_of_binding.merge_or(self.backward_chaining_ask(subgoal))
+                else:
+                    list_of_binding = self.backward_chaining_ask(subgoal)
+        return list_of_binding
     def backward_chaining_or(self,goal):
         binding_list = ListOfBinding([])
         for fact in self.list_of_facts:
@@ -599,9 +668,26 @@ class KnowledgeBase:
             new_dis.list_of_statements.append(rule.lhs)
             list_of_cnfs.append(CNF(new_dis,rule.difference))
         for query in self.list_of_query:
-            binding = self.resolution_step(list_of_cnfs, Disjunction([query.negate()]))
+            binding = self.resolution_ask(list_of_cnfs,query)
             binding_query.append(binding)
         return binding_query
+    def resolution_ask(self,list_of_cnfs,goal):
+        list_of_binding = None
+        if isinstance(goal,Statement):
+            return self.resolution_step(list_of_cnfs, Disjunction([goal.negate()]))
+        elif isinstance(goal,Conjunction):
+            for subgoal in goal.list_of_statements:
+                if list_of_binding!=None:
+                    list_of_binding = list_of_binding.merge_and(self.resolution_ask(list_of_cnfs,subgoal))
+                else:
+                    list_of_binding = self.resolution_ask(list_of_cnfs,subgoal)
+        elif isinstance(goal,Disjunction):
+            for subgoal in goal.list_of_statements:
+                if list_of_binding!=None:
+                    list_of_binding = list_of_binding.merge_or(self.resolution_ask(list_of_cnfs,subgoal))
+                else:
+                    list_of_binding = self.resolution_ask(list_of_cnfs,subgoal)
+        return list_of_binding
     def resolution_step(self,list_of_cnfs,goal):
         list_of_binding = ListOfBinding()
         if len(goal.list_of_statements) == 0:
@@ -637,53 +723,58 @@ class KnowledgeBase:
                                 subgoal_bind.binding_list.remove(bind)
                         list_of_binding = list_of_binding.merge_or(subgoal_bind)
         return list_of_binding                   
-        
-
-
-        
-
-knowledge_base = KnowledgeBase()
-knowledge_base.input_from_file('input.txt')
-# print(str(knowledge_base))
-start = time.time()
-
-# # Forward chaining
-# for query in knowledge_base.list_of_query:
-#     print('?- ' + str(query))
-#     binding = knowledge_base.forward_chaining(query)
-#     if binding == False:
-#         print('False')
-#     else:
-#         for term in query.list_of_terms:
-#             if term.is_var:
-#                 print(term.term + ' = ' + binding.binding_dict[term.term])
-#         print('True')
-
-# # Backward chaining
-for query in knowledge_base.list_of_query:
+    
+def print_output(f, query, binding_list):
     print('?- ' + str(query))
-    binding_list = knowledge_base.backward_chaining_ask(query)
+    f.write('?- ' + str(query) + '\n')
     is_fail = True
+    res = ''
     for binding in binding_list.binding_list:
         if binding.is_fail == False:
             is_fail = False
-            for term in query.list_of_terms:
-                if term.is_var:
-                    print(term.term + ' = ' + binding.binding_dict[term.term])
+            str_bind = ''
+            for term in query.get_list_var():
+                if not term.startswith(abstract_name):
+                    str_bind += term + ' = ' + binding.binding_dict[term] + '\n'
+            if not str_bind in res:
+                res += str_bind
+    print(res,end='')
+    f.write(res)
     print(not is_fail)
+    f.write(str(not is_fail) + '\n\n')
+input_file = ''
+output_file = ''
+inference_choice = 0
+if len(sys.argv) == 2:
+    input_file = sys.argv[1]
+if len(sys.argv) == 3:
+    input_file = sys.argv[1]
+    output_file = sys.argv[2]
+if input_file =='':
+    input_file = input('Input file: ')
+if output_file == '':
+    output_file = input('Output file: ')
 
-# Resolution
-# query_binding = knowledge_base.resolution()
-# for index in range(len(knowledge_base.list_of_query)):
-#     print('?- ' + str(knowledge_base.list_of_query[index]))
-#     list_of_binding = query_binding[index]
-#     is_fail = True
-#     for binding in list_of_binding.binding_list:
-#         if not binding.is_fail:
-#             is_fail = False
-#             for term in knowledge_base.list_of_query[index].list_of_terms:
-#                 if term.is_var:
-#                     print(term.term + ' = ' + binding.binding_dict[term.term])
-#     print(not is_fail)
-end = time.time()
-print(str(end - start))
+knowledge_base = KnowledgeBase()
+knowledge_base.input_from_file(input_file)
+
+while inference_choice <= 0 or inference_choice >=4:
+    inference_choice = int(input('1. Forward chaining \t 2. Backward chaining \t 3. Resolution \nChoose inference: '))
+f = open(output_file,'w')
+if inference_choice == 1:
+    # Forward chaining
+    for query in knowledge_base.list_of_query:
+        binding_list = knowledge_base.forward_chaining_ask(query)
+        print_output(f,query,binding_list)
+elif inference_choice == 2:
+    # Backward chaining
+    for query in knowledge_base.list_of_query:
+        binding_list = knowledge_base.backward_chaining_ask(query)
+        print_output(f,query,binding_list)
+elif inference_choice == 3:
+    # Resolution
+    query_binding = knowledge_base.resolution()
+    for index in range(len(knowledge_base.list_of_query)):
+        query = knowledge_base.list_of_query[index]
+        binding_list = query_binding[index]
+        print_output(f,query,binding_list)
